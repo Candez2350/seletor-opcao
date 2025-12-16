@@ -5,3 +5,5 @@ ta
 numpy
 plotly
 yahooquery
+norm
+datetime
