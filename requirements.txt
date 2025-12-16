@@ -1,9 +1,5 @@
 streamlit
 yfinance
 pandas
-ta
 numpy
-plotly
-yahooquery
-norm
-datetime
+scipy
