@@ -157,7 +157,9 @@ with st.sidebar:
     
     st.info("Legenda Momentum (30d):\n🟢 > 5% (Forte)\n🌱 0 a 5% (Fraco)\n🍂 -5 a 0% (Fraco)\n🔴 < -5% (Forte)")
 
-tab1, tab2 = st.tabs(["📡 Scanner de Mercado", "🧮 Calculadora & Gráfico"])
+# --- CRIAÇÃO DAS ABAS (ATUALIZADO PARA 3 ABAS) ---
+tab1, tab2, tab3 = st.tabs(["📡 Scanner de Tendência", "🧮 Calculadora", "⚡ Scanner de Straddle"])
+
 
 # --- TAB 1: SCANNER ---
 with tab1:
