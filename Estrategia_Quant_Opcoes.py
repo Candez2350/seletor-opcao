@@ -69,6 +69,68 @@ class QuantMath:
         ln_S_K = term1 - term2
         K = S / np.exp(ln_S_K)
         return K
+        
+# --- CLASSE DE INDICADORES TÉCNICOS (NOVA) ---
+class TechnicalIndicators:
+    @staticmethod
+    def calculate_bollinger_bandwidth(series, window=20, num_std=2):
+        """Calcula a largura das bandas (Upper - Lower) / Middle"""
+        rolling_mean = series.rolling(window=window).mean()
+        rolling_std = series.rolling(window=window).std()
+        upper_band = rolling_mean + (rolling_std * num_std)
+        lower_band = rolling_mean - (rolling_std * num_std)
+        
+        # Evita divisão por zero
+        bandwidth = ((upper_band - lower_band) / rolling_mean) * 100
+        return bandwidth
+
+    @staticmethod
+    def calculate_adx(df, window=14):
+        """
+        Cálculo do ADX (Average Directional Index).
+        Mede a força da tendência (independente da direção).
+        ADX < 25 = Mercado Lateral (Ideal para Squeeze).
+        """
+        data = df.copy()
+        
+        # True Range (TR)
+        data['H-L'] = data['High'] - data['Low']
+        data['H-PC'] = abs(data['High'] - data['Close'].shift(1))
+        data['L-PC'] = abs(data['Low'] - data['Close'].shift(1))
+        data['TR'] = data[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+        
+        # Directional Movement (+DM, -DM)
+        data['UpMove'] = data['High'] - data['High'].shift(1)
+        data['DownMove'] = data['Low'].shift(1) - data['Low']
+        
+        data['+DM'] = np.where((data['UpMove'] > data['DownMove']) & (data['UpMove'] > 0), data['UpMove'], 0)
+        data['-DM'] = np.where((data['DownMove'] > data['UpMove']) & (data['DownMove'] > 0), data['DownMove'], 0)
+        
+        # Suavização (Simples para performance)
+        data['TR14'] = data['TR'].rolling(window=window).sum()
+        data['+DM14'] = data['+DM'].rolling(window=window).sum()
+        data['-DM14'] = data['-DM'].rolling(window=window).sum()
+        
+        # Directional Indicators (+DI, -DI)
+        data['+DI14'] = 100 * (data['+DM14'] / data['TR14'])
+        data['-DI14'] = 100 * (data['-DM14'] / data['TR14'])
+        
+        # DX e ADX
+        data['DX'] = 100 * abs(data['+DI14'] - data['-DI14']) / (data['+DI14'] + data['-DI14'])
+        data['ADX'] = data['DX'].rolling(window=window).mean()
+        
+        return data['ADX']
+
+    @staticmethod
+    def calculate_historical_volatility(series, window=20):
+        """
+        Volatilidade Histórica Anualizada (HV).
+        Importante para saber se o ativo tem 'sangue' para correr.
+        """
+        log_ret = np.log(series / series.shift(1))
+        vol = log_ret.rolling(window=window).std() * np.sqrt(252) * 100
+        return vol
+
 
 # --- DADOS (CACHE) ---
 @st.cache_data(ttl=1800) # Cache de 30 min
@@ -402,3 +464,160 @@ with tab2:
             st.info(f"💡 Para uma alta de {move_pct}%, a **Compra a Seco** compensa o risco.")
         else:
             st.warning("Resultados similares.")
+# --- TAB 3: NOVO MÓDULO STRADDLE (ADX + SQUEEZE) ---
+with tab3:
+    st.markdown("### ⚡ Scanner de Explosão (Long Straddle)")
+    st.caption("**Setup CNPI-T:** Buscamos ativos comprimidos (Squeeze) e sem tendência (ADX Baixo) prestes a explodir.")
+    
+    # Aviso importante sobre Balanços (O "Trap")
+    st.warning("⚠️ **Atenção:** Antes de operar Straddle, verifique se a empresa divulgará **Balanço (Earnings)** nos próximos 10 dias. Se sim, a volatilidade pode cair após o evento (IV Crush) e gerar prejuízo.")
+
+    col_sq_1, col_sq_2 = st.columns([3, 1])
+    with col_sq_1:
+        # Usa a lógica de seleção inteligente da Tab 1
+        if select_all:
+            squeeze_selected = st.multiselect("Carteira Squeeze", options=final_list_options, default=final_list_options)
+        else:
+            # Padrão ou o que foi selecionado na Tab 1
+            default_squeeze = options_selected if 'options_selected' in locals() and options_selected else default_selection
+            squeeze_selected = st.multiselect("Carteira Squeeze", options=final_list_options, default=default_squeeze)
+    
+    with col_sq_2:
+        st.write("")
+        st.write("")
+        run_squeeze = st.button("🔎 BUSCAR SQUEEZE", type="primary", use_container_width=True)
+
+    if run_squeeze:
+        if not squeeze_selected:
+            st.warning("Selecione ativos para analisar.")
+        else:
+            with st.spinner("Calculando Bandas, ADX e Volatilidade..."):
+                # Baixa histórico maior (6mo) para garantir precisão do BBW histórico
+                market_data = get_batch_data(squeeze_selected)
+            
+            squeeze_results = []
+            
+            if not market_data.empty:
+                prog_sq = st.progress(0)
+                tot_sq = len(squeeze_selected)
+
+                for i, ticker in enumerate(squeeze_selected):
+                    prog_sq.progress((i + 1) / tot_sq)
+                    try:
+                        # Extração Segura de Dados
+                        if len(squeeze_selected) > 1:
+                            if (ticker + ".SA") not in market_data.columns.levels[0]: continue
+                            df = market_data[ticker + ".SA"].copy()
+                        else:
+                            df = market_data.copy()
+                            if isinstance(df.columns, pd.MultiIndex):
+                                try: df = df.xs(ticker + ".SA", axis=1, level=0)
+                                except: pass
+                        
+                        df = df.dropna()
+                        # Precisamos de pelo menos 120 candles para ter histórico relevante de BBW
+                        if len(df) < 100: continue 
+
+                        close = df['Close']
+                        
+                        # 1. Momentum 30d (Filtro de Lateralidade de Preço)
+                        mom30 = close.pct_change(periods=30).iloc[-1] * 100
+                        
+                        # 2. Bollinger Bandwidth (O Aperto)
+                        df['BBW'] = TechnicalIndicators.calculate_bollinger_bandwidth(close)
+                        current_bbw = df['BBW'].iloc[-1]
+                        
+                        # Percentil (Score): O quão apertado está comparado aos últimos 6 meses?
+                        bbw_history = df['BBW'].tail(120)
+                        min_bbw = bbw_history.min()
+                        max_bbw = bbw_history.max()
+                        squeeze_score = ((current_bbw - min_bbw) / (max_bbw - min_bbw)) * 100
+                        
+                        # 3. ADX (Filtro de Ausência de Tendência)
+                        adx_series = TechnicalIndicators.calculate_adx(df)
+                        current_adx = adx_series.iloc[-1]
+                        
+                        # 4. Volatilidade Histórica (Potencial de Explosão)
+                        hv_series = TechnicalIndicators.calculate_historical_volatility(close)
+                        current_hv = hv_series.iloc[-1]
+                        
+                        status = "Normal"
+                        
+                        # --- A REGRA DE OURO REFINADA ---
+                        # Preço Lateral (-5 a +5% em 30d)
+                        if -5 <= mom30 <= 5:
+                            # Squeeze Forte (Score < 20% do range histórico)
+                            if squeeze_score <= 20:
+                                # Confirmação pelo ADX (Mercado sem direção)
+                                if current_adx < 25:
+                                    status = "⚡ SQUEEZE (Prime)"
+                                else:
+                                    status = "⚠️ Squeeze (ADX Alto)"
+                            elif squeeze_score <= 35:
+                                status = "👀 Atenção"
+
+                        squeeze_results.append({
+                            "Ativo": ticker,
+                            "Preço": close.iloc[-1],
+                            "BBW Atual": current_bbw,
+                            "Squeeze Score": squeeze_score, # 0 = Mínima histórica (Bom)
+                            "ADX": current_adx,             # < 25 = Bom
+                            "Vol Hist (HV)": current_hv,    # > 20% = Bom (Evita ativos "mortos")
+                            "Status": status
+                        })
+
+                    except Exception as e: pass
+                
+                prog_sq.empty()
+
+                if squeeze_results:
+                    df_sq = pd.DataFrame(squeeze_results)
+                    
+                    # Filtra apenas o que não é "Normal"
+                    df_sq_final = df_sq[df_sq['Status'] != "Normal"].copy()
+                    
+                    # Ordena: Os melhores squeezes (menor score) primeiro
+                    df_sq_final = df_sq_final.sort_values(by="Squeeze Score", ascending=True)
+
+                    if not df_sq_final.empty:
+                        st.success(f"Encontramos {len(df_sq_final)} ativos comprimidos!")
+                        
+                        st.dataframe(
+                            df_sq_final.style.format({
+                                "Preço": "R$ {:.2f}",
+                                "BBW Atual": "{:.2f}%",
+                                "Squeeze Score": "{:.0f}/100",
+                                "ADX": "{:.1f}",
+                                "Vol Hist (HV)": "{:.1f}%"
+                            }).applymap(
+                                # Cores do Status
+                                lambda val: 'background-color: #ffcccc; color: #cc0000; font-weight: bold' if 'Prime' in str(val) else ('background-color: #fff3cd; color: #856404' if 'Atenção' in str(val) or 'ADX' in str(val) else ''),
+                                subset=['Status']
+                            ).applymap(
+                                # Cor da Vol Histórica (Alerta se for muito baixa)
+                                lambda val: 'color: gray' if val < 15 else 'color: black',
+                                subset=['Vol Hist (HV)']
+                            ),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        # Guia Operacional
+                        with st.expander("📚 Guia Operacional: Straddle no Squeeze", expanded=True):
+                            st.markdown("""
+                            **Como montar:**
+                            1.  **Compra de CALL (ATM)** + **Compra de PUT (ATM)**.
+                            2.  **Vencimento:** Longo (30 a 45 dias úteis) para fugir do Theta acelerado.
+                            3.  **Strike:** Escolha o Delta mais próximo de 0.50.
+                            
+                            **Checklist de Validação:**
+                            - [ ] **Squeeze Score < 20?** (Bandas estão historicamente apertadas)
+                            - [ ] **ADX < 25?** (Confirma que não há tendência prévia forte)
+                            - [ ] **Vol Histórica > 20%?** (Se for menor que 15%, o ativo pode não ter força para romper o custo do straddle)
+                            - [ ] **Sem Balanço nos próximos dias?** (Evitar IV Crush)
+                            """)
+                    else:
+                        st.warning("Nenhum ativo em ponto de Squeeze no momento. O mercado pode estar direcional.")
+                else:
+                    st.error("Erro ao processar dados.")
+
