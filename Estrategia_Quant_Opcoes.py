@@ -144,7 +144,7 @@ def get_batch_data(tickers_list):
         return pd.DataFrame()
 
 # --- INTERFACE ---
-st.title("🦁 Quant Scanner 2.0: IBRX & Custom")
+st.title("⚡ Quant Options Lab 3.0: Straddle & Trend")
 
 with st.sidebar:
     st.header("⚙️ Parâmetros")
@@ -153,13 +153,10 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("**Adicionar Ticker Extra**")
-    custom_ticker = st.text_input("Digita o código (ex: NVDC34)", placeholder="Sem .SA").upper().strip()
-    
-    st.info("Legenda Momentum (30d):\n🟢 > 5% (Forte)\n🌱 0 a 5% (Fraco)\n🍂 -5 a 0% (Fraco)\n🔴 < -5% (Forte)")
+    custom_ticker = st.text_input("Código (ex: NVDC34)", placeholder="Sem .SA").upper().strip()
 
-# --- CRIAÇÃO DAS ABAS (ATUALIZADO PARA 3 ABAS) ---
+# --- AQUI ESTÁ A CORREÇÃO: DEFININDO AS 3 VARIÁVEIS ---
 tab1, tab2, tab3 = st.tabs(["📡 Scanner de Tendência", "🧮 Calculadora", "⚡ Scanner de Straddle"])
-
 
 # --- TAB 1: SCANNER ---
 with tab1:
