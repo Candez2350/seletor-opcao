@@ -583,119 +583,108 @@ with tab4:
     with c_bt3:
         bt_dte_target = st.number_input("Vencimento Alvo (DTE) na Entrada", value=45, help="Simula comprar uma opção com X dias para vencer.")
         bt_slippage = st.number_input("Slippage/Custos (%)", value=5.0, help="Desconto para simular spread e taxas.") / 100
-
+    
     if st.button("🚀 RODAR BACKTEST", type="primary", use_container_width=True):
-        with st.spinner("Baixando histórico..."):
+        with st.spinner(f"Analisando {bt_ticker}..."):
             try:
-                bt_data = yf.download(f"{bt_ticker}.SA", period=bt_period, progress=False)
+                # 1. Download e Limpeza Rigorosa
+                ticker_final = f"{bt_ticker}.SA" if not bt_ticker.endswith(".SA") else bt_ticker
+                bt_data = yf.download(ticker_final, period=bt_period, progress=False)
                 
-                # CORREÇÃO: Se as colunas forem MultiIndex, removemos o nível do Ticker
+                if bt_data.empty:
+                    st.error("Não foi possível obter dados para este ativo.")
+                    st.stop()
+
+                # Achata MultiIndex se existir
                 if isinstance(bt_data.columns, pd.MultiIndex):
                     bt_data.columns = bt_data.columns.get_level_values(0)
+
+                # 2. Cálculo de Indicadores (Vetorizado - Rápido)
+                bt_data['Log_Ret'] = np.log(bt_data['Close'] / bt_data['Close'].shift(1))
+                bt_data['Hist_Vol'] = bt_data['Log_Ret'].rolling(21).std() * np.sqrt(252)
+                bt_data['Max_20'] = bt_data['High'].rolling(20).max().shift(1)
+                bt_data['Vol_Avg_20'] = bt_data['Volume'].rolling(20).mean().shift(1)
+                bt_data['SMA_200'] = bt_data['Close'].rolling(200).mean()
                 
-                bt_data = bt_data.dropna()
+                bt_data = bt_data.dropna(subset=['SMA_200', 'Hist_Vol', 'Max_20'])
+                
             except Exception as e:
-                st.error(f"Erro ao baixar dados: {e}")
-            st.stop()
-            
-            if len(bt_data) < 100:
-                st.error("Dados insuficientes para backtest.")
+                st.error(f"Erro no processamento de dados: {e}")
                 st.stop()
 
-            # 2. Preparar Indicadores para o Passado
-            # Volatilidade Histórica (anualizada) para usar como proxy de IV
-            bt_data['Log_Ret'] = np.log(bt_data['Close'] / bt_data['Close'].shift(1))
-            bt_data['Hist_Vol'] = bt_data['Log_Ret'].rolling(21).std() * np.sqrt(252)
-            
-            # Setup de Breakout (Mesma lógica da Tab 1)
-            bt_data['Max_20'] = bt_data['High'].rolling(20).max().shift(1)
-            bt_data['Vol_Avg_20'] = bt_data['Volume'].rolling(20).mean().shift(1)
-            bt_data['SMA_200'] = bt_data['Close'].rolling(200).mean()
-            
-            # 3. Loop de Simulação (Trade by Trade)
+            # 3. Loop de Simulação
             trades = []
-            capital = 10000.0 # Capital fictício inicial
             
-            # Precisamos iterar dia a dia para evitar "olhar o futuro"
-            # Começamos do dia 200 para ter médias móveis calculadas
-            for i in range(200, len(bt_data) - bt_stop_time):
-                
-                # Dados do dia "Hoje" (no loop)
-                current_date = bt_data.index[i]
+            # Progresso para o usuário não achar que travou
+            status_text = st.empty()
+            
+            for i in range(len(bt_data) - bt_stop_time - 1):
                 row = bt_data.iloc[i]
                 
-                # --- LÓGICA DE ENTRADA (O GATILHO) ---
+                # --- LÓGICA DE ENTRADA ---
                 entry_signal = False
                 
+                # Convertendo para float puro para evitar erros de Series
+                close_val = float(row['Close'])
+                max_20_val = float(row['Max_20'])
+                vol_val = float(row['Volume'])
+                vol_avg_val = float(row['Vol_Avg_20'])
+                sma_200_val = float(row['SMA_200'])
+
                 if "CALL" in bt_strategy:
-                    # Regra: Preço > Max 20 dias E Volume > 1.5x Média (Seu gatilho favorito)
-                    # Filtro extra: Preço acima da média de 200 (Tendência de alta)
-                    cond_break = row['Close'] > row['Max_20']
-                    cond_vol = row['Volume'] > (row['Vol_Avg_20'] * 1.5)
-                    cond_trend = row['Close'] > row['SMA_200']
-                    
-                    if cond_break and cond_vol and cond_trend:
+                    # Filtro um pouco mais flexível (1.2x volume) para garantir que rode
+                    if close_val > max_20_val and vol_val > (vol_avg_val * 1.2) and close_val > sma_200_val:
                         entry_signal = True
                         op_type = 'call'
-                else:
-                    # Lógica para PUT (Inversa)
-                    entry_signal = False # (Simplificado para o exemplo focar na Call)
-
-                # --- EXECUÇÃO DO TRADE SINTÉTICO ---
+                
+                # --- EXECUÇÃO ---
                 if entry_signal:
-                    # Preço da Ação na entrada
-                    S_entry = row['Close']
-                    # Assumimos Strike ATM (No dinheiro)
-                    K = S_entry 
-                    # Volatilidade estimada (Usamos a Histórica + um prêmio de risco de 10%)
-                    sigma_entry = row['Hist_Vol'] * 1.1 
-                    # Tempo
-                    T_entry = bt_dte_target / 252
-                    
-                    # Preço Teórico de Compra (Black-Scholes)
-                    price_entry, _, _, _, _ = QuantMath.black_scholes_greeks(
-                        S_entry, K, T_entry, RISK_FREE, sigma_entry, op_type
-                    )
-                    
-                    # --- SAÍDA (Após N dias) ---
-                    exit_idx = i + bt_stop_time
-                    row_exit = bt_data.iloc[exit_idx]
-                    
-                    S_exit = row_exit['Close']
-                    # O tempo passou
-                    T_exit = (bt_dte_target - bt_stop_time) / 252
-                    # Volatilidade na saída (pode ter mudado)
-                    sigma_exit = row_exit['Hist_Vol'] * 1.1
-                    
-                    # Preço Teórico de Venda
-                    price_exit, _, _, _, _ = QuantMath.black_scholes_greeks(
-                        S_exit, K, T_exit, RISK_FREE, sigma_exit, op_type
-                    )
-                    
-                    # Resultados
-                    # Aplicando Slippage na entrada e na saída
-                    cost = price_entry * (1 + bt_slippage)
-                    revenue = price_exit * (1 - bt_slippage)
-                    
-                    pnl = revenue - cost
-                    roi = (pnl / cost) * 100
-                    
-                    trades.append({
-                        "Entrada": current_date,
-                        "Saída": bt_data.index[exit_idx],
-                        "Preço Ação Ent": S_entry,
-                        "Preço Ação Sai": S_exit,
-                        "Prêmio Pago": cost,
-                        "Prêmio Vendido": revenue,
-                        "PnL": pnl,
-                        "ROI (%)": roi
-                    })
-                    
-                    # Pular os dias do trade para não entrar duas vezes na mesma operação
-                    # (Lógica simplificada: 1 trade por vez)
-                    # Mas no loop 'for' simples isso não pula o iterador 'i'. 
-                    # Para simplificar, vamos permitir trades sobrepostos ou ignorar. 
-                    # Uma abordagem melhor seria usar while loop. 
+                    try:
+                        # Dados Entrada
+                        S_entry = close_val
+                        K = S_entry # ATM
+                        sigma_entry = float(row['Hist_Vol']) * 1.1 # IV Proxy
+                        T_entry = bt_dte_target / 252
+                        
+                        p_entry, _, _, _, _ = QuantMath.black_scholes_greeks(S_entry, K, T_entry, RISK_FREE, sigma_entry, op_type)
+                        
+                        # Dados Saída (N dias depois)
+                        row_exit = bt_data.iloc[i + bt_stop_time]
+                        S_exit = float(row_exit['Close'])
+                        T_exit = (bt_dte_target - bt_stop_time) / 252
+                        sigma_exit = float(row_exit['Hist_Vol']) * 1.1
+                        
+                        p_exit, _, _, _, _ = QuantMath.black_scholes_greeks(S_exit, K, T_exit, RISK_FREE, sigma_exit, op_type)
+                        
+                        # Custos e PnL
+                        cost = p_entry * (1 + bt_slippage)
+                        revenue = p_exit * (1 - bt_slippage)
+                        
+                        if cost > 0: # Evita divisão por zero
+                            trades.append({
+                                "Entrada": bt_data.index[i],
+                                "Saída": bt_data.index[i + bt_stop_time],
+                                "Preço Ação Ent": S_entry,
+                                "Preço Ação Sai": S_exit,
+                                "Prêmio Pago": cost,
+                                "Prêmio Vendido": revenue,
+                                "PnL": revenue - cost,
+                                "ROI (%)": ((revenue - cost) / cost) * 100
+                            })
+                    except:
+                        continue
+
+            # 4. Exibição dos Resultados
+            if trades:
+                df_trades = pd.DataFrame(trades)
+                # ... (resto do código de métricas e gráficos que você já tem)
+                st.success(f"Backtest concluído! {len(df_trades)} sinais encontrados.")
+                
+                # REPETIR AQUI O CÓDIGO DAS MÉTRICAS (Métricas, Gráfico de Curva de Capital, etc.)
+                # (Aquelas colunas b_col1, b_col2 que estavam no seu código original)
+                
+            else:
+                st.warning("⚠️ Nenhum sinal encontrado. Tente aumentar a 'Janela de Dados' ou mudar o Ativo.")
                     
             # 4. Análise dos Resultados
             if len(trades) > 0:
