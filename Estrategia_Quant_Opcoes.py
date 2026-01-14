@@ -585,7 +585,7 @@ with tab4:
         bt_slippage = st.number_input("Slippage/Custos (%)", value=5.0, help="Desconto para simular spread e taxas.") / 100
 
     if st.button("🚀 RODAR BACKTEST", type="primary", use_container_width=True):
-    with st.spinner("Baixando histórico..."):
+        with st.spinner("Baixando histórico..."):
         try:
             bt_data = yf.download(f"{bt_ticker}.SA", period=bt_period, progress=False)
             
