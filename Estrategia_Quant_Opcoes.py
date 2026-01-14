@@ -586,16 +586,16 @@ with tab4:
 
     if st.button("🚀 RODAR BACKTEST", type="primary", use_container_width=True):
         with st.spinner("Baixando histórico..."):
-        try:
-            bt_data = yf.download(f"{bt_ticker}.SA", period=bt_period, progress=False)
-            
-            # CORREÇÃO: Se as colunas forem MultiIndex, removemos o nível do Ticker
-            if isinstance(bt_data.columns, pd.MultiIndex):
-                bt_data.columns = bt_data.columns.get_level_values(0)
-            
-            bt_data = bt_data.dropna()
-        except Exception as e:
-            st.error(f"Erro ao baixar dados: {e}")
+            try:
+                bt_data = yf.download(f"{bt_ticker}.SA", period=bt_period, progress=False)
+                
+                # CORREÇÃO: Se as colunas forem MultiIndex, removemos o nível do Ticker
+                if isinstance(bt_data.columns, pd.MultiIndex):
+                    bt_data.columns = bt_data.columns.get_level_values(0)
+                
+                bt_data = bt_data.dropna()
+            except Exception as e:
+                st.error(f"Erro ao baixar dados: {e}")
             st.stop()
             
             if len(bt_data) < 100:
