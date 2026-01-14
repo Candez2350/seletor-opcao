@@ -158,7 +158,7 @@ with st.sidebar:
     custom_ticker = st.text_input("Código (ex: NVDC34)", placeholder="Sem .SA").upper().strip()
 
 # --- TABS ---
-tab1, tab2, tab3 = st.tabs(["🚀 Scanner de Breakout", "🧮 Calculadora de Saída", "⚡ Scanner de Squeeze"])
+tab1, tab2, tab3, tab4 = st.tabs(["📡 Scanner", "🧮 Calculadora", "⚡ Straddle", "⏪ Backtest Sintético"])
 
 # --- TAB 1: SCANNER DE BREAKOUT (QUANT) ---
 with tab1:
@@ -538,8 +538,6 @@ with tab3:
                     st.warning("⚠️ **Aviso de Earnings:** Verifique manualmente se a empresa divulgará balanço nos próximos 5 dias. Comprar Straddle *antes* do anúncio é arriscado devido ao 'IV Crush' pós-evento.")
                 else:
                     st.info("Nenhum ativo apresenta condições de Squeeze (Compressão) no momento.")
-
-tab1, tab2, tab3, tab4 = st.tabs(["📡 Scanner", "🧮 Calculadora", "⚡ Straddle", "⏪ Backtest Sintético"])
 
 # --- TAB 4: BACKTEST SINTÉTICO ---
 with tab4:
