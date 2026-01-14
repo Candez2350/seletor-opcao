@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Quant Options Lab 3.0", 
+    page_title="Quant Options Lab", 
     layout="wide", 
     page_icon="🦁",
     initial_sidebar_state="expanded"
