@@ -91,47 +91,65 @@ class QuantMath:
 class TechnicalIndicators:
     @staticmethod
     def calculate_volatility_rank(series, window_years=1):
-        """
-        Calcula o HV Rank (Historical Volatility Rank).
-        Como não temos IV histórico no Yahoo free, usamos a Vol Histórica como proxy.
-        """
-        # Retorno Logarítmico
         log_ret = np.log(series / series.shift(1))
-        
-        # Volatilidade Histórica (Janela móvel de 21 dias anualizada)
         hv = log_ret.rolling(window=21).std() * np.sqrt(252) * 100
-        
-        # Rank de 1 ano (252 dias)
         lookback = int(252 * window_years)
         hv_min = hv.rolling(window=lookback).min()
         hv_max = hv.rolling(window=lookback).max()
-        
-        # Fórmula do Rank
         rank = ((hv - hv_min) / (hv_max - hv_min)) * 100
         return hv, rank
 
     @staticmethod
+    def calculate_bollinger_percentile(series, window=20):
+        """Calcula o BBW (Bollinger Band Width) e seu Rank"""
+        sma = series.rolling(window=window).mean()
+        std = series.rolling(window=window).std()
+        u_bb = sma + (std * 2)
+        l_bb = sma - (std * 2)
+        
+        bbw = ((u_bb - l_bb) / sma) * 100
+        # Rank dos últimos 126 dias (6 meses)
+        bbw_min = bbw.rolling(window=126).min()
+        bbw_max = bbw.rolling(window=126).max()
+        bbw_rank = ((bbw - bbw_min) / (bbw_max - bbw_min)) * 100
+        
+        return bbw, bbw_rank, u_bb, l_bb, sma
+
+    @staticmethod
+    def check_keltner_squeeze(df, window=20):
+        """Verifica se as Bandas de Bollinger estão dentro do Canal de Keltner"""
+        # Bollinger
+        std = df['Close'].rolling(window=window).std()
+        upper_bb = df['Close'].rolling(window=window).mean() + (std * 2)
+        lower_bb = df['Close'].rolling(window=window).mean() - (std * 2)
+        
+        # Keltner (usando ATR simplificado)
+        tr = pd.concat([df['High'] - df['Low'], 
+                        abs(df['High'] - df['Close'].shift()), 
+                        abs(df['Low'] - df['Close'].shift())], axis=1).max(axis=1)
+        atr = tr.rolling(window=window).mean()
+        sma = df['Close'].rolling(window=window).mean()
+        upper_kc = sma + (atr * 1.5)
+        lower_kc = sma - (atr * 1.5)
+        
+        # Squeeze ON se as bandas de Bollinger estiverem dentro do Keltner
+        squeeze_on = (upper_bb < upper_kc) & (lower_bb > lower_kc)
+        return squeeze_on
+
+    @staticmethod
     def check_breakout_setup(df):
-        """
-        Verifica o Setup de Rompimento com Volume:
-        1. Preço atual > Máxima dos últimos 20 dias.
-        2. Volume atual > 1.5x Média de volume de 20 dias.
-        """
-        # Máxima dos 20 dias ANTERIORES (shift 1 para não olhar o candle atual na referência)
-        rolling_max_20 = df['High'].rolling(window=20).max().shift(1)
+        # Garante que estamos pegando as colunas corretas se for MultiIndex
+        close_col = df['Close']
+        high_col = df['High']
+        vol_col = df['Volume']
         
-        # Média de Volume 20 dias
-        vol_sma_20 = df['Volume'].rolling(window=20).mean().shift(1)
+        rolling_max_20 = high_col.rolling(window=20).max().shift(1)
+        vol_sma_20 = vol_col.rolling(window=20).mean().shift(1)
         
-        last_close = df['Close'].iloc[-1]
-        last_volume = df['Volume'].iloc[-1]
-        last_max = rolling_max_20.iloc[-1]
-        last_vol_avg = vol_sma_20.iloc[-1]
+        is_breakout = close_col.iloc[-1] > rolling_max_20.iloc[-1]
+        is_volume_high = vol_col.iloc[-1] > (vol_sma_20.iloc[-1] * 1.5)
         
-        is_breakout = last_close > last_max
-        is_volume_high = last_volume > (last_vol_avg * 1.5)
-        
-        return is_breakout, is_volume_high, last_max, last_vol_avg
+        return is_breakout, is_volume_high, rolling_max_20.iloc[-1], vol_sma_20.iloc[-1]
 
 # --- DADOS (CACHE) ---
 @st.cache_data(ttl=1800) 
@@ -567,15 +585,18 @@ with tab4:
         bt_slippage = st.number_input("Slippage/Custos (%)", value=5.0, help="Desconto para simular spread e taxas.") / 100
 
     if st.button("🚀 RODAR BACKTEST", type="primary", use_container_width=True):
-        
-        with st.spinner("Baixando histórico e processando matemática..."):
-            # 1. Baixar Dados Longos
-            try:
-                bt_data = yf.download(f"{bt_ticker}.SA", period=bt_period, progress=False)
-                bt_data = bt_data.dropna()
-            except:
-                st.error("Erro ao baixar dados.")
-                st.stop()
+    with st.spinner("Baixando histórico..."):
+        try:
+            bt_data = yf.download(f"{bt_ticker}.SA", period=bt_period, progress=False)
+            
+            # CORREÇÃO: Se as colunas forem MultiIndex, removemos o nível do Ticker
+            if isinstance(bt_data.columns, pd.MultiIndex):
+                bt_data.columns = bt_data.columns.get_level_values(0)
+            
+            bt_data = bt_data.dropna()
+        except Exception as e:
+            st.error(f"Erro ao baixar dados: {e}")
+            st.stop()
             
             if len(bt_data) < 100:
                 st.error("Dados insuficientes para backtest.")
