@@ -37,9 +37,10 @@ IBRX_100_OPT = [
     "TOTS3", "CMIG4", "ITSA4", "EMBR3", "VAMO3", "BRFS3", "ENEV3", "CCRO3", "CSNA3", "MGLU3",
     "ASAI3", "CRFB3", "ELET6", "GOAU4", "HYPE3", "VIIA3", "EGIE3", "SOMA3", "CPFE3", "ALPA4",
     "MULT3", "IGTI11", "YDUQ3", "CIEL3", "EZTC3", "BBSE3", "SANB11", "MRFG3", "BEEF3", "MRVE3",
-    "KLBN11", "TAEE11", "CMIN3", "GOLL4", "AZUL4", "CVCB3", "PETZ3", "DXCO3", "SMTO3", "FLRY3",
+    "KLBN11", "TAEE11", "CMIN3", "GOLL4", "CVCB3", "PETZ3", "DXCO3", "SMTO3", "FLRY3",
     "COGN3", "POSI3", "LWSA3", "ENGI11", "TRPL4", "RAIL3", "SLCE3", "ARZZ3", "PCAR3", "BRKM5",
-    "CSMG3", "USIM5", "GMAT3", "NTCO3", "CYRE3", "ECOR3", "JHSF3", "CASH3", "STBP3", "QUAL3","BOVA11"
+    "CSMG3", "USIM5", "GMAT3", "NTCO3", "CYRE3", "ECOR3", "JHSF3", "CASH3", "STBP3", "QUAL3","BOVA11",
+    "SMLL11"
 ]
 IBRX_100_OPT.sort()
 
@@ -87,13 +88,16 @@ class QuantMath:
         K = S / np.exp(ln_S_K)
         return K
         
-# --- CLASSE DE INDICADORES TÉCNICOS ---
+# --- CLASSE DE INDICADORES TÉCNICOS (ATUALIZADA) ---
 class TechnicalIndicators:
     @staticmethod
     def calculate_volatility_rank(series, window_years=1):
         log_ret = np.log(series / series.shift(1))
         hv = log_ret.rolling(window=21).std() * np.sqrt(252) * 100
         lookback = int(252 * window_years)
+        # Proteção contra dados curtos
+        if len(hv) < lookback: lookback = len(hv)
+        
         hv_min = hv.rolling(window=lookback).min()
         hv_max = hv.rolling(window=lookback).max()
         rank = ((hv - hv_min) / (hv_max - hv_min)) * 100
@@ -101,29 +105,26 @@ class TechnicalIndicators:
 
     @staticmethod
     def calculate_bollinger_percentile(series, window=20):
-        """Calcula o BBW (Bollinger Band Width) e seu Rank"""
         sma = series.rolling(window=window).mean()
         std = series.rolling(window=window).std()
         u_bb = sma + (std * 2)
         l_bb = sma - (std * 2)
-        
         bbw = ((u_bb - l_bb) / sma) * 100
-        # Rank dos últimos 126 dias (6 meses)
+        
+        # Rank dos últimos 6 meses (126 dias)
         bbw_min = bbw.rolling(window=126).min()
         bbw_max = bbw.rolling(window=126).max()
         bbw_rank = ((bbw - bbw_min) / (bbw_max - bbw_min)) * 100
-        
         return bbw, bbw_rank, u_bb, l_bb, sma
 
     @staticmethod
     def check_keltner_squeeze(df, window=20):
-        """Verifica se as Bandas de Bollinger estão dentro do Canal de Keltner"""
         # Bollinger
         std = df['Close'].rolling(window=window).std()
         upper_bb = df['Close'].rolling(window=window).mean() + (std * 2)
         lower_bb = df['Close'].rolling(window=window).mean() - (std * 2)
         
-        # Keltner (usando ATR simplificado)
+        # Keltner (ATR simplificado)
         tr = pd.concat([df['High'] - df['Low'], 
                         abs(df['High'] - df['Close'].shift()), 
                         abs(df['Low'] - df['Close'].shift())], axis=1).max(axis=1)
@@ -132,24 +133,93 @@ class TechnicalIndicators:
         upper_kc = sma + (atr * 1.5)
         lower_kc = sma - (atr * 1.5)
         
-        # Squeeze ON se as bandas de Bollinger estiverem dentro do Keltner
         squeeze_on = (upper_bb < upper_kc) & (lower_bb > lower_kc)
         return squeeze_on
 
+    # --- NOVOS SETUPS ADAPTADOS B3 ---
+
     @staticmethod
-    def check_breakout_setup(df):
-        # Garante que estamos pegando as colunas corretas se for MultiIndex
-        close_col = df['Close']
-        high_col = df['High']
-        vol_col = df['Volume']
+    def check_brazil_breakout(df):
+        """
+        Qullamaggie Adaptado para B3:
+        1. Momentum Prévio: Subiu pelo menos 12% nos últimos 60 dias (Trend).
+        2. Médias Alinhadas: Preço > SMA20 > SMA50.
+        3. Consolidação: Preço atual está a menos de 5% da Máxima de 20 dias.
+        4. Gatilho: Hoje rompeu a máxima dos últimos 10 dias OU Volume estourou.
+        """
+        close = df['Close']
+        volume = df['Volume']
         
-        rolling_max_20 = high_col.rolling(window=20).max().shift(1)
-        vol_sma_20 = vol_col.rolling(window=20).mean().shift(1)
+        # Médias
+        sma20 = close.rolling(20).mean()
+        sma50 = close.rolling(50).mean()
         
-        is_breakout = close_col.iloc[-1] > rolling_max_20.iloc[-1]
-        is_volume_high = vol_col.iloc[-1] > (vol_sma_20.iloc[-1] * 1.5)
+        # Momentum (60 dias ~ 3 meses)
+        momentum_60d = close.pct_change(60)
         
-        return is_breakout, is_volume_high, rolling_max_20.iloc[-1], vol_sma_20.iloc[-1]
+        # Consolidação (Tight Area)
+        max_20d = df['High'].rolling(20).max().shift(1) # Máxima prévia
+        dist_to_high = (max_20d - close) / close
+
+        # Gatilho de Rompimento (Breakout) de curto prazo (10 dias)
+        max_10d = df['High'].rolling(10).max().shift(1)
+        is_breaking_out = close.iloc[-1] > max_10d.iloc[-1]
+        
+        # Volume Spike
+        vol_sma20 = volume.rolling(20).mean()
+        vol_spike = volume.iloc[-1] > (vol_sma20.iloc[-1] * 1.5)
+
+        # Lógica Final
+        # 1. Tem tendência de alta? (Momentum > 12% E acima das médias)
+        trend_ok = (momentum_60d.iloc[-1] > 0.12) and (close.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1])
+        
+        # 2. Está consolidando perto do topo? (Não recuou mais que 8% do topo)
+        consolidation_ok = dist_to_high.iloc[-1] < 0.08 and dist_to_high.iloc[-1] > -0.05
+        
+        return trend_ok, consolidation_ok, is_breaking_out, vol_spike, momentum_60d.iloc[-1]
+
+    @staticmethod
+    def check_episodic_pivot(df):
+        """
+        Setup EP: Gap de Alta + Volume Massivo
+        """
+        # Gap de hoje
+        prev_high = df['High'].shift(1).iloc[-1]
+        today_open = df['Open'].iloc[-1]
+        today_close = df['Close'].iloc[-1]
+        
+        gap_pct = (today_open - prev_high) / prev_high
+        
+        # Volume
+        vol_avg = df['Volume'].rolling(20).mean().shift(1).iloc[-1]
+        today_vol = df['Volume'].iloc[-1]
+        
+        # Critérios: Gap > 1.5% (B3 é menos volátil que Nasdaq) E Volume > 2x Média E Fechou Forte
+        is_ep = (gap_pct > 0.015) and (today_vol > 2 * vol_avg) and (today_close > today_open)
+        
+        return is_ep, gap_pct, (today_vol / vol_avg) if vol_avg > 0 else 0
+
+    @staticmethod
+    def check_parabolic_short(df):
+        """
+        Setup Climactic / Parabolic: Esticada violenta
+        1. RSI acima de 75/80.
+        2. Preço muito longe da média de 10/20 (Esticado).
+        """
+        # RSI 14
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        # Distância da Média 10
+        sma10 = df['Close'].rolling(10).mean()
+        dist_sma10 = (df['Close'] / sma10) - 1
+        
+        is_parabolic = (rsi.iloc[-1] > 75) and (dist_sma10.iloc[-1] > 0.15) # 15% longe da média de 10 é mta coisa pra B3
+        
+        return is_parabolic, rsi.iloc[-1], dist_sma10.iloc[-1]
 
 # --- DADOS (CACHE) ---
 @st.cache_data(ttl=1800) 
@@ -178,16 +248,24 @@ with st.sidebar:
 # --- TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📡 Scanner", "🧮 Calculadora", "⚡ Straddle", "⏪ Backtest Sintético"])
 
-# --- TAB 1: SCANNER DE BREAKOUT (QUANT) ---
+# --- TAB 1: SCANNER DE QULLAMAGGIE (ADAPTADO) ---
 with tab1:
-    st.markdown("### 🚀 Rastreador de Rompimento + Volatilidade Baixa")
-    st.info("Estratégia: Comprar Calls quando o preço rompe a máxima de 20 dias com volume alto, preferencialmente quando a volatilidade está baixa (HV Rank < 30).")
+    st.markdown("### 🦁 Scanner Qullamaggie (B3 Edition)")
+    
+    # Seletor de Estratégia
+    st.write("Selecione qual setup você quer caçar hoje:")
+    setup_mode = st.radio("", 
+        ["🚀 Breakout (Tendência + Consolidação)", 
+         "📰 Episodic Pivot (Notícia/Gap)", 
+         "📉 Parabolic Short (Esticada/Reversão)"], 
+        horizontal=True
+    )
 
     col_sel_all, col_sel, col_act = st.columns([1, 3, 1])
     with col_sel_all:
         st.write("") 
         st.write("") 
-        select_all = st.checkbox("Selecionar Todos", value=False)
+        select_all = st.checkbox("Selecionar Todos", value=True) # Padrão True para varrer tudo
     
     with col_sel:
         final_list_options = IBRX_100_OPT.copy()
@@ -209,7 +287,7 @@ with tab1:
         if not options_selected:
             st.warning("Selecione ativos.")
         else:
-            with st.spinner(f"Processando algoritmo Quant em {len(options_selected)} ativos..."):
+            with st.spinner(f"Analisando {len(options_selected)} ativos na B3..."):
                 market_data = get_batch_data(options_selected)
             
             results = []
@@ -234,74 +312,85 @@ with tab1:
                         df = df.dropna()
                         if len(df) < 60: continue
 
-                        # 1. Cálculo do Volatility Rank
-                        hv_series, rank_series = TechnicalIndicators.calculate_volatility_rank(df['Close'])
-                        current_rank = rank_series.iloc[-1]
-                        current_hv = hv_series.iloc[-1]
+                        # --- LÓGICA DE SELEÇÃO POR SETUP ---
+                        
+                        if "Breakout" in setup_mode:
+                            trend_ok, cons_ok, break_ok, vol_ok, mom_val = TechnicalIndicators.check_brazil_breakout(df)
+                            
+                            # Filtro: Mostrar se tem Tendência E (Consolidação OU Rompimento)
+                            if trend_ok and (cons_ok or break_ok):
+                                status = "💤 Consolidando"
+                                if break_ok and vol_ok: status = "🔥 BREAKOUT + VOLUME"
+                                elif break_ok: status = "⚡ Breakout (Vol Baixo)"
+                                
+                                results.append({
+                                    "Ativo": ticker,
+                                    "Preço": df['Close'].iloc[-1],
+                                    "Status": status,
+                                    "Momentum (60d)": mom_val * 100,
+                                    "Vol 20d (R$)": (df['Volume'] * df['Close']).rolling(20).mean().iloc[-1] / 1_000_000 # Em Milhões
+                                })
 
-                        # 2. Verificação do Setup de Breakout
-                        is_break, is_vol, ref_max, ref_vol = TechnicalIndicators.check_breakout_setup(df)
+                        elif "Episodic" in setup_mode:
+                            is_ep, gap_val, vol_mult = TechnicalIndicators.check_episodic_pivot(df)
+                            if is_ep:
+                                results.append({
+                                    "Ativo": ticker,
+                                    "Preço": df['Close'].iloc[-1],
+                                    "Gap (%)": gap_val * 100,
+                                    "Vol Multiplier": vol_mult,
+                                    "Status": "📰 EP DETECTADO"
+                                })
                         
-                        # 3. Tendência (SMA 200)
-                        sma200 = df['Close'].rolling(200).mean().iloc[-1]
-                        last_price = df['Close'].iloc[-1]
-                        trend = "Alta" if last_price > sma200 else "Baixa"
+                        elif "Parabolic" in setup_mode:
+                            is_para, rsi_val, dist_val = TechnicalIndicators.check_parabolic_short(df)
+                            if is_para:
+                                results.append({
+                                    "Ativo": ticker,
+                                    "Preço": df['Close'].iloc[-1],
+                                    "RSI (14)": rsi_val,
+                                    "Dist. MM10 (%)": dist_val * 100,
+                                    "Status": "⚠️ ESTICADO (SHORT)"
+                                })
 
-                        # Lógica de Classificação
-                        score = 0
-                        sinal = "Neutro"
-                        
-                        if is_break:
-                            if is_vol:
-                                sinal = "🔥 BREAKOUT CONFIRMADO"
-                                score = 3
-                            else:
-                                sinal = "⚠️ Breakout s/ Volume"
-                                score = 2
-                        elif last_price > ref_max * 0.98: # Perto da máxima
-                            sinal = "👀 Próximo ao Rompimento"
-                            score = 1
-                        
-                        # Adicionar aos resultados
-                        if score > 0 or (current_rank < 20): # Mostrar breakouts ou vol muito barata
-                            results.append({
-                                "Ativo": ticker,
-                                "Preço": last_price,
-                                "Sinal": sinal,
-                                "Vol Rank (HV)": current_rank,
-                                "Vol Histórica": current_hv,
-                                "Tendência (200d)": trend,
-                                "Volume/Média": (df['Volume'].iloc[-1] / ref_vol) if ref_vol > 0 else 0
-                            })
                     except Exception as e: pass
                 
                 progress_bar.empty()
 
                 if results:
                     df_res = pd.DataFrame(results)
-                    # Ordenar por "Qualidade do Sinal" (Volume alto e Vol Baixa é o ouro)
-                    df_res = df_res.sort_values(by=["Volume/Média"], ascending=False)
-
-                    st.markdown(f"**Encontradas {len(df_res)} oportunidades potenciais**")
-
-                    st.dataframe(
-                        df_res.style.format({
+                    
+                    if "Breakout" in setup_mode:
+                        df_res = df_res.sort_values(by="Momentum (60d)", ascending=False)
+                        st.success(f"Encontrados {len(df_res)} ativos em Tendência/Setup.")
+                        st.dataframe(df_res.style.format({
                             "Preço": "R$ {:.2f}",
-                            "Vol Rank (HV)": "{:.0f}%",
-                            "Vol Histórica": "{:.1f}%",
-                            "Volume/Média": "{:.1f}x"
+                            "Momentum (60d)": "{:.1f}%",
+                            "Vol 20d (R$)": "R$ {:.1f}M"
                         }).applymap(
-                            lambda val: 'background-color: #d4edda; color: green; font-weight: bold' if 'CONFIRMADO' in str(val) else ('color: orange' if 'Próximo' in str(val) else ''), 
-                            subset=['Sinal']
-                        ).applymap(
-                            lambda val: 'color: green; font-weight: bold' if val < 25 else ('color: red' if val > 80 else ''),
-                            subset=['Vol Rank (HV)']
-                        ),
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                            lambda x: 'background-color: #d4edda; color: green; font-weight: bold' if 'BREAKOUT' in str(x) else '', 
+                            subset=['Status']
+                        ), use_container_width=True, hide_index=True)
+                        
+                    elif "Episodic" in setup_mode:
+                        df_res = df_res.sort_values(by="Gap (%)", ascending=False)
+                        st.success(f"Encontrados {len(df_res)} potenciais Episodic Pivots.")
+                        st.dataframe(df_res.style.format({
+                            "Preço": "R$ {:.2f}",
+                            "Gap (%)": "{:.2f}%",
+                            "Vol Multiplier": "{:.1f}x"
+                        }), use_container_width=True, hide_index=True)
+
+                    elif "Parabolic" in setup_mode:
+                        df_res = df_res.sort_values(by="RSI (14)", ascending=False)
+                        st.warning(f"Encontrados {len(df_res)} ativos esticados (Cuidado!).")
+                        st.dataframe(df_res.style.format({
+                            "Preço": "R$ {:.2f}",
+                            "RSI (14)": "{:.0f}",
+                            "Dist. MM10 (%)": "{:.1f}%"
+                        }), use_container_width=True, hide_index=True)
                 else:
-                    st.info("Nenhum ativo disparou o setup de Breakout hoje.")
+                    st.info("Nenhum ativo atendeu aos critérios deste setup hoje.")
 
 
 # --- TAB 2: CALCULADORA (COM LÓGICA DE SAÍDA ANTECIPADA) ---
